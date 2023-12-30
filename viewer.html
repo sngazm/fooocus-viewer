@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Viewer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+
+  <body class="text-white bg-zinc-800">
+    <div id="app"></div>
+
+    <script
+      crossorigin
+      src="https://unpkg.com/react@18/umd/react.production.min.js"
+    ></script>
+    <script
+      crossorigin
+      src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"
+    ></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jsdiff/5.1.0/diff.min.js"></script>
+
+    <script type="text/babel">
+      function App() {
+        const [date, setDate] = React.useState(() => {
+          const date = sessionStorage.getItem("viewerDate")
+            ? new Date(sessionStorage.getItem("viewerDate"))
+            : new Date();
+          return date;
+        });
+
+        const [data, setData] = React.useState([]);
+        const [isLoading, setIsLoading] = React.useState(false);
+        const [isCorsError, setIsCorsError] = React.useState(false);
+        const [isNotFoundError, setIsNotFoundError] = React.useState(false);
+        const [autoReload, setAutoReload] = React.useState(() => {
+          const autoReload = sessionStorage.getItem("autoReload")
+            ? sessionStorage.getItem("autoReload") === "true"
+            : false;
+          return autoReload;
+        });
+        React.useEffect(() => {
+          sessionStorage.setItem("autoReload", autoReload.toString());
+        }, [autoReload]);
+
+        const isToday = date.toDateString() === new Date().toDateString();
+        const dateStr = getDateStr(date);
+
+        const handleUpdateDate = (dateStr) => {
+          const [year, month, day] = dateStr
+            .split("-")
+            .map((str) => parseInt(str));
+          setDate(new Date(year, month - 1, day));
+        };
+
+        const goTomorrow = () => {
+          const tomorrow = new Date(date);
+          tomorrow.setDate(tomorrow.getDate() + 1);
+          setDate(tomorrow);
+        };
+        const goYesterday = () => {
+          const yesterday = new Date(date);
+          yesterday.setDate(yesterday.getDate() - 1);
+          setDate(yesterday);
+        };
+
+        const fetchData = () => {
+          if (!isToday) {
+            setAutoReload(false);
+          }
+          sessionStorage.setItem("viewerDate", date.toDateString());
+          setIsLoading(true);
+          fetch(`./${dateStr}/log.html`, { cache: "no-store" })
+          .then((response) => response.text())
+          .then((text) => parseLog(text))
+          .then((data) => {
+            const newData = data.data;
+            console.log("newData: ", newData);
+            setData(newData);
+            setIsNotFoundError(false);
+            setIsCorsError(false);
+            setIsLoading(false);
+          })
+          .catch((e) => {
+              // CORS error
+              // console.error(e);
+              console.log(e)
+              if (e.name === "TypeError") {
+                setIsCorsError(true);
+              }
+              if (e.name === "SyntaxError") {
+                setIsNotFoundError(true);
+              }
+              setData(null);
+              setIsLoading(false);
+            });
+            
+        };
+        React.useEffect(fetchData, [date]);
+
+        React.useEffect(() => {
+          if (autoReload) {
+            const interval = setInterval(() => {
+              fetchData();
+            }, 5000);
+            return () => clearInterval(interval);
+          }
+        }, [autoReload]);
+
+        return (
+          <div>
+            <p className="p-4">
+              <a href="/">Fooocus</a> / Viewer
+            </p>
+            <div>
+              <button className="p-2 m-2" onClick={() => goYesterday()}>
+                ◀️
+              </button>
+              <input
+                className="text-gray-900"
+                type="date"
+                value={dateStr}
+                onChange={(e) => {
+                  handleUpdateDate(e.target.value);
+                }}
+              />
+              <button
+                className="p-2 m-2"
+                onClick={() => {
+                  goTomorrow();
+                }}
+              >
+                ▶️
+              </button>
+              {isToday ? (
+                <>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={autoReload}
+                      onChange={() => {
+                        console.log("onchange");
+                        if (!autoReload) {
+                          fetchData();
+                        }
+                        setAutoReload(!autoReload);
+                      }}
+                    />{" "}
+                    {isLoading ? (
+                      <span className="text-gray-500">Loading...</span>
+                    ) : (
+                      "Auto Reload"
+                    )}
+                  </label>
+                </>
+              ) : (
+                isLoading && <span className="text-gray-500">Loading...</span>
+              )}
+            </div>
+            {!isLoading && (
+              <>
+                {isCorsError && (
+                  <p className="text-center m-16">
+                    CORS error. Please access from your Fooocus local server.{" "}
+                    <br />
+                    In most cases, the URL is{" "}
+                    <a href="http://localhost:7860/file=outputs/viewer.html">
+                      http://localhost:7860/file=outputs/viewer.html
+                    </a>{" "}
+                    .
+                  </p>
+                )}
+                {isNotFoundError && (
+                  <p className="text-center m-16">
+                    {dateStr}/all.json Not found.
+                  </p>
+                )}
+              </>
+            )}
+
+            {data && data.length > 0 ? (
+              <ImageViewer dateStr={dateStr} data={data} />
+            ) : (
+              <p className="text-center m-16">No data 🤔</p>
+            )}
+          </div>
+        );
+      }
+
+      function ImageViewer({ data, dateStr }) {
+        const [mode, setMode] = React.useState("images"); // images, batches
+
+        const [currentPage, setCurrentPage] = React.useState(1);
+        const itemsPerPageSelects = [8, 16, 32, 64, 128];
+        const [itemsPerPage, setItemsPerPage] = React.useState(
+          itemsPerPageSelects[0]
+        );
+        const [asc, setAsc] = React.useState(false);
+        const [showDiff, setShowDiff] = React.useState(false);
+        const [numColumns, setNumColumns] = React.useState(2);
+
+        // Sort the data based on the title (generated timestamp)
+        const sortedData = [...data].sort((a, b) => {
+          if (asc) {
+            return a.src.localeCompare(b.src);
+          } else {
+            return b.src.localeCompare(a.src);
+          }
+        });
+        const batchData = getBatchData(sortedData);
+
+        React.useEffect(() => {
+          if (currentPage > Math.ceil(data.length / itemsPerPage)) {
+            setCurrentPage(Math.ceil(data.length / itemsPerPage));
+          }
+        }, [itemsPerPage]);
+
+        React.useEffect(() => {
+          setCurrentPage(1);
+        }, [dateStr]);
+
+        // Calculate the range of data for the current page
+        let startIndex, endIndex, numPages, firstImageInPage, lastImageInPage;
+        if (mode === "images") {
+          startIndex = (currentPage - 1) * itemsPerPage;
+          endIndex = startIndex + itemsPerPage;
+          numPages = Math.ceil(data.length / itemsPerPage);
+          firstImageInPage = (currentPage - 1) * itemsPerPage + 1;
+          lastImageInPage = Math.min(currentPage * itemsPerPage, data.length);
+        }
+        if (mode === "batches") {
+          startIndex = batchData[currentPage - 1].startIndex;
+          endIndex = batchData[currentPage - 1].endIndex + 1;
+          numPages = batchData.length;
+          firstImageInPage = startIndex + 1;
+          lastImageInPage = endIndex;
+        }
+
+        const currentBatches = getCurrentBatchData(
+          sortedData,
+          batchData,
+          startIndex,
+          endIndex
+        );
+
+        const pageInfo = {
+          mode,
+          currentPage,
+          setCurrentPage,
+          numPages,
+          numImages: data.length,
+          firstImageInPage,
+          lastImageInPage,
+        };
+
+        const pageData = [];
+        pageData.push(sortedData.slice(startIndex, endIndex));
+        return (
+          <div>
+            <div className="p-4">
+              <div className="text-right">
+                Mode:{" "}
+                {mode === "images" ? (
+                  <span className="font-bold">Images</span>
+                ) : (
+                  <span onClick={() => setMode("images")}>Images</span>
+                )}{" "}
+                |{" "}
+                {mode === "batches" ? (
+                  <span className="font-bold">Batches</span>
+                ) : (
+                  <span onClick={() => setMode("batches")}>Batches</span>
+                )}
+              </div>
+              <div className="text-right">
+                {mode === "images" && (
+                  <>
+                    Images per page:{" "}
+                    {itemsPerPageSelects.map((value) => (
+                      <label key={value}>
+                        <input
+                          type="radio"
+                          value={value}
+                          checked={itemsPerPage === value}
+                          onChange={() => setItemsPerPage(value)}
+                        />{" "}
+                        {value}
+                      </label>
+                    ))}
+                    <br />
+                  </>
+                )}
+                <label>
+                  Order:{" "}
+                  <button
+                    onClick={() => {
+                      setAsc(!asc);
+                    }}
+                  >
+                    {asc ? "⬆️" : "⬇️"}
+                  </button>
+                </label>
+                <br />
+                <label>
+                  {" "}
+                  Diff:{" "}
+                  <input
+                    type="checkbox"
+                    checked={showDiff}
+                    onChange={() => setShowDiff(!showDiff)}
+                  />
+                </label>
+              </div>
+            </div>
+
+            <PageController {...pageInfo} />
+
+            <div>
+              {currentBatches.map((item, index) => (
+                <BatchGallery
+                  key={item.timeStr}
+                  batch={item}
+                  showDiff={showDiff}
+                  numColumns={numColumns}
+                />
+              ))}
+              <GalleryController
+                numColumns={numColumns}
+                setNumColumns={setNumColumns}
+              />
+            </div>
+
+            <PageController {...pageInfo} scrollToTop />
+          </div>
+        );
+      }
+
+      function BatchGallery({ batch, showDiff, numColumns }) {
+        const numBatchImages = batch.endIndex - batch.startIndex + 1;
+        const dateStr = getDateStr(new Date());
+        return (
+          <div className="py-8">
+            <div className="border m-2 p-4">
+              <p className="flex justify-between">
+                <span className="text-xl mb-2">
+                  <strong>Batch {batch.batchNumber}</strong> ({numBatchImages}{" "}
+                  Images)
+                </span>
+                <span>{batch.timeStr}</span>
+              </p>
+              {Object.entries(batch.batchSettings).map(([key, value], idx) => (
+                <div key={idx}>
+                  <strong>{key}:</strong>{" "}
+                  {batch.batchSettingDiffs[key] &&
+                  batch.batchSettingDiffs[key].length > 0 &&
+                  showDiff ? (
+                    <span>{batch.batchSettingDiffs[key].map((v) => v)}</span>
+                  ) : (
+                    <span>
+                      {key == "LoRAs" ? (
+                        <>
+                          <br />
+                          <span>
+                            {value.map((LoRA, idx) => (
+                              <span key={idx}>
+                                {LoRA.name}: {LoRA.weight}
+                                {idx < value.length - 1 ? <br /> : ""}
+                              </span>
+                            ))}
+                          </span>
+                        </>
+                      ) : Array.isArray(value) ? (
+                        value.join(", ")
+                      ) : (
+                        value
+                      )}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div>
+              <div className={`grid gap-1 grid-cols-${numColumns}`}>
+                {batch.currentPageData.map((data, idx) => {
+                  const dateStr = data.src.split("_")[0];
+                  return (
+                    <div key={idx} className="">
+                      <img
+                        className="max-w-screen max-h-screen object-contain"
+                        src={`./${dateStr}/${data.src}`}
+                        alt={data.src}
+                        width="100%"
+                      />
+                      <p className="text-gray-500 text-sm">{data.src}</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      function PageController({
+        mode,
+        currentPage,
+        setCurrentPage,
+        numPages,
+        numImages,
+        firstImageInPage,
+        lastImageInPage,
+        scrollToTop,
+      }) {
+        return (
+          <div className="flex justify-center">
+            <button
+              className="bg-transparent hover:bg-blue-500 text-white font-semibold hover:text-white py-2 px-4 border border-white hover:border-transparent rounded disabled:bg-gray-500 disabled:border-gray-800 disabled:text-white"
+              onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
+              disabled={currentPage === 1}
+            >
+              ◀️
+            </button>
+            <span className="p-2">
+              {mode === "batches" ? "Batch" : "P."} {currentPage} / {numPages} (
+              {firstImageInPage} - {lastImageInPage} / {numImages} Images)
+            </span>
+            <button
+              className="bg-transparent hover:bg-blue-500 text-white font-semibold hover:text-white py-2 px-4 border border-white hover:border-transparent rounded disabled:bg-gray-500 disabled:border-gray-800 disabled:text-white"
+              onClick={() => {
+                setCurrentPage((prev) => Math.min(prev + 1));
+                if (scrollToTop) {
+                  window.scroll({
+                    top: 0,
+                    left: 0,
+                    behavior: "smooth",
+                  });
+                }
+              }}
+              disabled={currentPage === numPages}
+            >
+              ▶️
+            </button>
+          </div>
+        );
+      }
+
+      function GalleryController({ numColumns, setNumColumns }) {
+        return (
+          <div className="sticky bottom-0 p-2">
+            <button
+              className="bg-transparent hover:bg-blue-500 text-white font-semibold hover:text-white py-2 px-4 border border-white hover:border-transparent rounded disabled:bg-gray-500 disabled:border-gray-800 disabled:text-white"
+              onClick={() => setNumColumns((prev) => Math.max(prev - 1, 1))}
+              disabled={numColumns === 1}
+            >
+              口
+            </button>
+            <button
+              className="bg-transparent hover:bg-blue-500 text-white font-semibold hover:text-white py-2 px-4 border border-white hover:border-transparent rounded disabled:bg-gray-500 disabled:border-gray-800 disabled:text-white"
+              onClick={() => setNumColumns((prev) => prev + 1)}
+            >
+              田
+            </button>
+          </div>
+        );
+      }
+
+      const getDateStr = (date) => {
+        return date
+          .toLocaleDateString("ja-JP", {
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+          })
+          .replaceAll("/", "-");
+      };
+
+      const parseLog = (html) => {
+        const data = [];
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, "text/html");
+        console.log(doc.querySelector('title'))
+        if (doc.querySelector('title')) {
+          const images = doc.querySelectorAll(".image-container");
+          console.log(images)
+          for (let i = 0; i < images.length; i++) {
+            const image = images[i]
+            const src = image.id.replace('_png', '.png').replace('_jpg', '.jpg')
+            const settings = {}
+            const settingsTr = image.querySelectorAll('.metadata tr')
+            settingsTr.forEach(tr => {
+              const key = tr.querySelector('.key').textContent
+              const value = tr.querySelector('.value').textContent
+              settings[key] = value;
+            })
+            data.push({
+              src,
+              ...settings,
+            });
+          }
+        } else {
+          console.log('Old style Log')
+          const images = doc.querySelectorAll("div[id$='_png']");
+          for (let i = 0; i < images.length; i++) {
+            const image = images[i]
+            const paragraphs = image.querySelectorAll("p")
+            const src = image.id.replace('_png', '.png').replace('_jpg', '.jpg')
+            const settings = {}
+            for (let j = 1; j < paragraphs.length; j++) {
+              const text = paragraphs[j].textContent;
+              const nodes = paragraphs[j].childNodes;
+              for (let n = 0; n < nodes.length; n++) {
+                const node = nodes[n];
+                if (node.nodeName === "B") {
+                  const key = node.previousSibling.textContent
+                    .replace(": ", "")
+                    .replace(", ", "");
+                  const value = node.textContent;
+                  settings[key] = value;
+                }
+              }
+            }
+            data.push({
+              src,
+              ...settings,
+            });
+          }
+        }
+        
+        console.log(data);
+
+        return {
+          data,
+        };
+      };
+
+      const getBatchData = (data) => {
+        const batchData = [];
+        const isAsc = data.length < 2 || data[0].src < data[1].src;
+
+        for (let i = 0; i < data.length; i++) {
+          if (i === 0 || !isSameBatch(data[i], data[i - 1])) {
+            batchData.push({
+              batchSettings: {
+                "Base Model": data[i]["Base Model"],
+                "Refiner Model": data[i]["Refiner Model"],
+                "Refiner Switch": data[i]["Refiner Switch"] ?? "",
+                Prompt: data[i]["Prompt"],
+                "Negative Prompt": data[i]["Negative Prompt"],
+                Styles: data[i]["Styles"],
+                "Performance": data[i]["Performance"],
+                "Use Fooocus V2 (Prompt Expansion)": data[i][
+                  "Fooocus V2 Expansion"
+                ]
+                  ? "true"
+                  : "false",
+                LoRAs: [],
+              },
+              batchSettingDiffs: {
+                "Base Model": [],
+                "Refiner Model": [],
+                "Refiner Switch": [],
+                "Use Fooocus V2 (Prompt Expansion)": [],
+                Prompt: [],
+                "Performance": [],
+                "Negative Prompt": [],
+                LoRAs: [],
+              },
+              timeStr: data[i].src.split("_")[1].replaceAll("-", ":"),
+              currentPageData: [],
+              startIndex: i,
+              endIndex: i,
+            });
+            // filter out the property starting with "LoRA"
+            Object.keys(data[i]).forEach((key) => {
+              if (key.startsWith("LoRA [")) {
+                batchData[batchData.length - 1].batchSettings.LoRAs.push({
+                  name: key.split("]")[0].replace("[", ""),
+                  weight: data[i][key],
+                });
+              }
+            });
+          } else {
+            if (batchData.length > 0) {
+              batchData[batchData.length - 1].endIndex = i;
+            }
+          }
+        }
+
+        for (let i = 0; i < batchData.length; i++) {
+          if (isAsc) {
+            batchData[i].batchNumber = i + 1;
+          } else {
+            batchData[i].batchNumber = batchData.length - i;
+          }
+        }
+        console.log({isAsc, batchData})
+
+        // get the diff of the prompt from the previous batch
+        for (let i = 0; i < batchData.length; i++) {
+          
+          // skip if the current batch is the oldest batch
+          if (isAsc && i === 0 || !isAsc && i === batchData.length - 1) {
+            continue
+          }
+
+          // skip if the current batch doesn't have the "Base Model" setting
+          // (Generated by upscaling or others)
+          if (!batchData[i].batchSettings["Base Model"]) {
+            continue
+          }
+
+          // find the second latest batch which has the "Base Model" setting
+          const oldBatches = isAsc ? batchData.slice(0, i).reverse() : batchData.slice(i + 1) // newest to oldest
+          
+          console.log('i: ', i , batchData[i], {oldBatches})
+          const prevBatchIndex = oldBatches
+            .findIndex((batch) => {
+              return batch.batchSettings["Base Model"]
+            });
+          
+          // skip if you can't find the previous batch
+          if (prevBatchIndex < 0) {
+            console.log('no previous batch')
+            continue
+          }
+
+          const prevBatch = oldBatches[prevBatchIndex]
+          const currBatch = batchData[i]
+          
+          console.log(prevBatch);
+          // finally get the diff of the prompts
+          [
+            "Base Model",
+            "Refiner Model",
+            "Refiner Switch",
+            "Use Fooocus V2 (Prompt Expansion)",
+            "Prompt",
+            "Negative Prompt",
+          ].forEach((prompt) => {
+            const diff = Diff.diffWords(
+              prevBatch.batchSettings[prompt],
+              currBatch.batchSettings[prompt]
+            );
+            diff.forEach((part) => {
+              if (part.added) {
+                currBatch.batchSettingDiffs[prompt].push(
+                  <span className="text-green-500">{part.value}</span>
+                );
+              } else if (part.removed) {
+                currBatch.batchSettingDiffs[prompt].push(
+                  <s className="text-red-500">{part.value}</s>
+                );
+              } else {
+                currBatch.batchSettingDiffs[prompt].push(
+                  <span>{part.value}</span>
+                );
+              }
+            });
+          });
+
+          // get the diff of the LoRAs from the previous batch
+          const prevLoRAs = prevBatch.batchSettings.LoRAs;
+          const currLoRAs = currBatch.batchSettings.LoRAs;
+          const LoRAsDiff = getLoRAsDiff(prevLoRAs, currLoRAs)
+          currBatch.batchSettingDiffs.LoRAs = LoRAsDiff
+        }
+        console.log('finishied getting batch data', batchData);
+
+        return batchData;
+      };
+
+      const getLoRAsDiff = (prevLoRAs, currLoRAs) => {
+        const newLoRAs = currLoRAs.filter(
+          (currLoRA) =>
+            !prevLoRAs.some((prevLoRA) => prevLoRA.name === currLoRA.name)
+        );
+        const removedLoRAs = prevLoRAs.filter(
+          (prevLoRA) =>
+            !currLoRAs.some((currLoRA) => currLoRA.name === prevLoRA.name)
+        );
+        const changedLoRAs = currLoRAs.filter((currLoRA) => {
+          const prevLoRA = prevLoRAs.find(
+            (prevLoRA) => prevLoRA.name === currLoRA.name
+          );
+          return prevLoRA && prevLoRA.weight !== currLoRA.weight;
+        });
+        const result = []
+        newLoRAs.forEach((newLoRA) => {
+          result.push(
+            <>
+              <br />
+              <span className="text-green-500">
+                {newLoRA.name}: {newLoRA.weight}
+              </span>
+            </>
+          );
+        });
+        changedLoRAs.forEach((changedLoRA) => {
+          result.push(
+            <>
+              <br />
+              <span>
+                {changedLoRA.name}:{" "}
+                <span className="text-green-500">
+                  {changedLoRA.weight}
+                </span>
+              </span>
+            </>
+          );
+        });
+        removedLoRAs.forEach((removedLoRA) => {
+          result.push(
+            <>
+              <br />
+              <s className="text-red-500">
+                {removedLoRA.name}: {removedLoRA.weight}
+              </s>
+            </>
+          );
+        });
+
+        return result
+      }
+
+      const isSameBatch = (a, b) => {
+        // Compare the Prompts and Model names
+        const compareKeys = [
+          "Prompt",
+          "Negative Prompt",
+          "Base Model",
+          "Refiner Model",
+          "Styles",
+          "Performance"
+        ];
+        if (compareKeys.some((key) => a[key] !== b[key])) {
+          return false;
+        }
+
+        if (
+          !!a["Fooocus V2 (Prompt Expansion)"] !==
+          !!b["Fooocus V2 (Prompt Expansion)"]
+        ) {
+          return false;
+        }
+
+        // Compare the LoRA names and weights
+        const [aLoRAKeys, bLoRAKeys] = [a, b].map((item) =>
+          Object.keys(item).filter((key) => key.startsWith("LoRA ["))
+        );
+        const [aLoRAs, bLoRAs] = [aLoRAKeys, bLoRAKeys].map((keys) =>
+          keys.map((key) => {
+            const LoRAName = key.split("]")[0].replace("[", "");
+            const LoRAWeight = a[key];
+            return { LoRAName, LoRAWeight };
+          })
+        );
+        if (aLoRAs.length !== bLoRAs.length) {
+          console.log(aLoRAs.length, bLoRAs.length);
+          return false;
+        }
+        if (
+          aLoRAs.some(
+            (aLoRA, idx) =>
+              aLoRA.LoRAName !== bLoRAs[idx].LoRAName ||
+              aLoRA.LoRAWeight !== bLoRAs[idx].LoRAWeight
+          )
+        ) {
+          return false;
+        }
+        return true;
+      };
+
+      const getCurrentBatchData = (data, batchData, startIndex, endIndex) => {
+        for (let i = startIndex; i < endIndex; i++) {
+          const batchIndex = batchData.findIndex(
+            (batch) => i >= batch.startIndex && i <= batch.endIndex
+          );
+          if (batchIndex >= 0) {
+            batchData[batchIndex].currentPageData.push(data[i]);
+          } else {
+            console.log("something wrong");
+          }
+        }
+        const currentBatches = batchData.filter(
+          (batch) => batch.currentPageData.length > 0
+        );
+        return currentBatches;
+      };
+
+      ReactDOM.createRoot(document.getElementById("app")).render(<App />);
+    </script>
+  </body>
+</html>
