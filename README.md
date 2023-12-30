@@ -1,6 +1,11 @@
-Readme to be written.
+# fooocus-viewer
+A simple viewer for Fooocus logs.
 
-# Features:
+![275327017-22d2166b-6b88-4ca7-9c7c-0e9839efb72a](https://github.com/sngazm/fooocus-viewer/assets/4480229/75a772dc-f7fd-4ce0-98b7-6161f61ba8e2)
+
+
+
+## Features
 
 - One HTML file. no additional backend, no npm install (it loads React and others from CDN)
 - Quick date switching
